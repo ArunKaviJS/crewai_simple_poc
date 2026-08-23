@@ -1,219 +1,234 @@
-import sys
-from pathlib import Path
+# main.py
 
-from config.settings import (
-    OUTPUT_DIR,
-    validate_config,
-    print_config_status,
+import os
+import json
+
+from dotenv import load_dotenv
+from openai import AzureOpenAI
+
+from tool_definitions import tools
+
+from tools.file_tools import (
+    list_files,
+    search_file
 )
 
-from orchestration.crew import build_crew
+from tools.weather_tools import (
+    get_weather
+)
 
-from gates.publish_gate import publish_gate
+from tools.calculator_tools import (
+    calculate
+)
 
-from schemas.article import ArticleDraft
-from schemas.social import SocialDrafts
+
+# ============================================================
+# LOAD ENVIRONMENT VARIABLES
+# ============================================================
+
+load_dotenv()
 
 
-def save_outputs(result):
+# ============================================================
+# AZURE OPENAI CLIENT
+# ============================================================
 
-    OUTPUT_DIR.mkdir(exist_ok=True)
+client = AzureOpenAI(
+    api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+    azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
+    api_version=os.getenv("AZURE_OPENAI_API_VERSION")
+)
 
-    # -------------------------
-    # Research
-    # -------------------------
+deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT")
 
-    research_output = result.tasks_output[0]
 
-    research_path = OUTPUT_DIR / "research_notes.md"
+# ============================================================
+# TOOL EXECUTOR
+# ============================================================
 
-    research_path.write_text(
-        research_output.raw,
-        encoding="utf-8"
-    )
+def execute_tool(tool_name, arguments):
 
-    # -------------------------
-    # Article
-    # -------------------------
+    print("\n--------------------------------")
+    print("EXECUTING TOOL")
+    print("--------------------------------")
 
-    article = next(
-        (
-            output.pydantic
-            for output in result.tasks_output
-            if isinstance(
-                output.pydantic,
-                ArticleDraft
-            )
-        ),
-        None,
-    )
+    print("Tool:", tool_name)
+    print("Arguments:", arguments)
 
-    if not article:
-        raise RuntimeError(
-            "ArticleDraft was not produced."
+    # --------------------------------
+    # FILE TOOLS
+    # --------------------------------
+
+    if tool_name == "list_files":
+
+        return list_files()
+
+
+    elif tool_name == "search_file":
+
+        return search_file(
+            arguments["filename"]
         )
 
-    article_text = (
-        f"# {article.title}\n\n"
-        f"## Summary\n\n"
-        f"{article.summary}\n\n"
-        f"{article.article_markdown}\n"
-    )
 
-    article_path = OUTPUT_DIR / "article.md"
+    # --------------------------------
+    # WEATHER TOOL
+    # --------------------------------
 
-    article_path.write_text(
-        article_text,
-        encoding="utf-8"
-    )
+    elif tool_name == "get_weather":
 
-    # -------------------------
-    # Social
-    # -------------------------
-
-    social = next(
-        (
-            output.pydantic
-            for output in result.tasks_output
-            if isinstance(
-                output.pydantic,
-                SocialDrafts
-            )
-        ),
-        None,
-    )
-
-    if not social:
-        raise RuntimeError(
-            "SocialDrafts was not produced."
+        return get_weather(
+            arguments["city"]
         )
 
-    social_text = (
-        "# Social Drafts\n\n"
-        "## LinkedIn\n\n"
-        f"{social.linkedin_post}\n\n"
-        "## X\n\n"
-        f"{social.x_post}\n\n"
-        "## Publishing Status\n\n"
-        f"{social.publishing_status}\n"
-    )
 
-    social_path = OUTPUT_DIR / "social.md"
+    # --------------------------------
+    # CALCULATOR
+    # --------------------------------
 
-    social_path.write_text(
-        social_text,
-        encoding="utf-8"
-    )
+    elif tool_name == "calculate":
 
-    return article, social
+        return calculate(
+            arguments["expression"]
+        )
 
-
-def main():
-
-    validate_config()
-
-    print_config_status()
-
-    # -------------------------
-    # Topic
-    # -------------------------
-
-    if len(sys.argv) < 2:
-
-        topic = input(
-            "\nEnter topic: "
-        ).strip()
 
     else:
 
-        topic = " ".join(
-            sys.argv[1:]
-        )
+        return {
+            "error": f"Unknown tool: {tool_name}"
+        }
 
-    if not topic:
-        raise ValueError(
-            "Topic cannot be empty."
-        )
 
-    print("\n")
-    print("=" * 70)
-    print("CREWAI AGENTIC CONTENT PIPELINE")
-    print("=" * 70)
+# ============================================================
+# USER INPUT
+# ============================================================
 
-    print(f"\nTopic: {topic}")
+user_question = input(
+    "\n👤 User: "
+)
 
-    # -------------------------
-    # Build Crew
-    # -------------------------
 
-    crew = build_crew(topic)
+# ============================================================
+# INITIAL MESSAGE
+# ============================================================
 
-    # -------------------------
-    # Kickoff
-    # -------------------------
+messages = [
 
-    print("\n🚀 Starting CrewAI workflow...\n")
+    {
+        "role": "system",
+        "content": """
+You are a helpful AI assistant.
 
-    result = crew.kickoff()
+You have access to several tools.
 
-    if not result:
-        raise RuntimeError(
-            "Crew returned no result."
-        )
+Use tools when they are necessary to answer the user's question.
 
-    if not result.tasks_output:
-        raise RuntimeError(
-            "Crew returned no task outputs."
-        )
+You can call multiple tools if necessary.
+"""
+    },
 
-    # -------------------------
-    # Save
-    # -------------------------
+    {
+        "role": "user",
+        "content": user_question
+    }
 
-    article, social = save_outputs(
-        result
+]
+
+
+# ============================================================
+# AGENT LOOP
+# ============================================================
+
+while True:
+
+    print("\n🤖 Calling Azure OpenAI...")
+
+    response = client.chat.completions.create(
+
+        model=deployment,
+
+        messages=messages,
+
+        tools=tools,
+
+        tool_choice="auto"
     )
 
-    print("\n✓ Research saved.")
-    print("✓ Article saved.")
-    print("✓ Social drafts saved.")
 
-    # -------------------------
-    # Human Gate
-    # -------------------------
+    message = response.choices[0].message
 
-    approved = publish_gate(
-        article,
-        social
-    )
 
-    if approved:
+    # ========================================================
+    # NO TOOL REQUIRED
+    # ========================================================
 
-        print(
-            "\n✓ Approved."
+    if not message.tool_calls:
+
+        print("\n================================")
+        print("🤖 FINAL ANSWER")
+        print("================================")
+
+        print(message.content)
+
+        break
+
+
+    # ========================================================
+    # TOOL CALLS FOUND
+    # ========================================================
+
+    print("\n================================")
+    print("🤖 LLM REQUESTED TOOL(S)")
+    print("================================")
+
+
+    # Add assistant message containing tool calls
+    messages.append(message)
+
+
+    # ========================================================
+    # EXECUTE EVERY TOOL REQUESTED
+    # ========================================================
+
+    for tool_call in message.tool_calls:
+
+        tool_name = tool_call.function.name
+
+        arguments = json.loads(
+            tool_call.function.arguments
         )
 
-        print(
-            "Publishing is intentionally "
-            "separate from the autonomous agents."
-        )
 
-        # If you later want publishing:
-        #
-        # publish_to_webhook(...)
-        #
-        # should happen HERE.
+        print("\n📌 Tool requested by LLM:")
+        print("   Name:", tool_name)
+        print("   Arguments:", arguments)
 
-    else:
 
-        print(
-            "\n✗ Publish rejected."
-        )
+        # Execute actual Python function
 
-        print(
-            "Nothing was published."
+        result = execute_tool(
+            tool_name,
+            arguments
         )
 
 
-if __name__ == "__main__":
-    main()
+        print("\n📦 Tool returned:")
+        print(result)
+
+
+        # ====================================================
+        # SEND TOOL RESULT BACK TO LLM
+        # ====================================================
+
+        messages.append(
+
+            {
+                "role": "tool",
+
+                "tool_call_id": tool_call.id,
+
+                "content": json.dumps(result)
+            }
+
+        )

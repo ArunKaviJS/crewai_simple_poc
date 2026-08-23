@@ -1,6 +1,2 @@
-crewai
-crewai-tools
-litellm
-pydantic
+openai 
 python-dotenv
-requests
